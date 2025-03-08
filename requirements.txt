@@ -1,0 +1,5 @@
+Flask
+pdf2image
+Pillow
+google-generativeai
+pandas
