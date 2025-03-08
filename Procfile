@@ -1,1 +1,1 @@
-web: gunicorn src.app:app --bind 0.0.0.0:$PORT
+web: cd src && gunicorn --workers 1 --threads 8 --timeout 0 app:app
