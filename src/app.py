@@ -3,6 +3,7 @@ import json
 import base64
 import sys
 import logging
+import traceback
 from flask import Flask, request, jsonify, send_from_directory
 from werkzeug.utils import secure_filename
 import google.generativeai as genai
@@ -23,29 +24,30 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout)
     ]
 )
+logger = logging.getLogger(__name__)
 
 # Gemini APIの設定
 GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY")
 if GOOGLE_API_KEY:
     genai.configure(api_key=GOOGLE_API_KEY)
-    logging.info("Gemini API configured successfully")
+    logger.info("Gemini API configured successfully")
 else:
-    logging.warning("警告: GOOGLE_API_KEYが設定されていません。")
+    logger.warning("警告: GOOGLE_API_KEYが設定されていません。")
 
 # Flaskアプリの設定
 app = Flask(__name__, static_folder='.')
 
 # アップロードフォルダの設定を絶対パスに変更
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-app.config['UPLOAD_FOLDER'] = os.path.join(BASE_DIR, 'uploads')
+app.config['UPLOAD_FOLDER'] = os.path.join(tempfile.gettempdir(), 'payment_statement_uploads')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB制限
 
 # アップロードフォルダが存在しない場合は作成
 try:
     os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-    logging.info(f"Upload folder created at: {app.config['UPLOAD_FOLDER']}")
+    logger.info(f"Upload folder created at: {app.config['UPLOAD_FOLDER']}")
 except Exception as e:
-    logging.error(f"Error creating upload folder: {e}")
+    logger.error(f"Error creating upload folder: {e}")
 
 # 許可されるファイル拡張子
 ALLOWED_EXTENSIONS = {'pdf', 'png', 'jpg', 'jpeg'}
@@ -169,7 +171,8 @@ def serve_root():
     try:
         return send_from_directory('.', 'index.html')
     except Exception as e:
-        logging.error(f"Error serving root: {e}")
+        logger.error(f"Error serving root: {e}")
+        logger.error(traceback.format_exc())
         return jsonify({"error": "Could not serve index.html"}), 500
 
 # プログレス情報を提供するエンドポイント
@@ -188,6 +191,9 @@ def health_check():
         is_heroku = 'DYNO' in os.environ
         environment = "Heroku" if is_heroku else "Local/Cloud Run"
         
+        # ポート情報を取得
+        port = int(os.environ.get('PORT', 8080))
+        
         # システム情報を取得
         system_info = {
             "status": "healthy",
@@ -196,12 +202,18 @@ def health_check():
             "python_version": sys.version,
             "api_key_configured": bool(GOOGLE_API_KEY),
             "upload_folder": app.config['UPLOAD_FOLDER'],
-            "upload_folder_exists": os.path.exists(app.config['UPLOAD_FOLDER'])
+            "upload_folder_exists": os.path.exists(app.config['UPLOAD_FOLDER']),
+            "port": port,
+            "temp_dir": tempfile.gettempdir(),
+            "current_dir": os.getcwd(),
+            "files_in_current_dir": os.listdir('.')
         }
         
+        logger.info(f"Health check: {system_info}")
         return jsonify(system_info)
     except Exception as e:
-        logging.error(f"Health check error: {e}")
+        logger.error(f"Health check error: {e}")
+        logger.error(traceback.format_exc())
         return jsonify({"status": "unhealthy", "error": str(e)}), 500
 
 @app.route('/upload', methods=['POST'])
@@ -251,7 +263,7 @@ def upload_file():
                     for page_index, img in enumerate(images):
                         # ページ進捗状況を更新
                         progress_data['current_page'] = page_index + 1
-                        print(f"Processing file {progress_data['current_file']}/{total_files}: {filename} - Page {page_index+1}/{len(images)}")
+                        logger.info(f"Processing file {progress_data['current_file']}/{total_files}: {filename} - Page {page_index+1}/{len(images)}")
                         
                         result = process_image(img)
                         if 'records' in result:
@@ -265,7 +277,7 @@ def upload_file():
                     # 画像を直接処理
                     progress_data['total_pages'] = 1
                     progress_data['current_page'] = 1
-                    print(f"Processing file {progress_data['current_file']}/{total_files}: {filename}")
+                    logger.info(f"Processing file {progress_data['current_file']}/{total_files}: {filename}")
                     
                     img = Image.open(file_path)
                     result = process_image(img)
@@ -277,6 +289,8 @@ def upload_file():
                                     record[key] = 0
                         all_records.extend(result['records'])
             except Exception as e:
+                logger.error(f"処理エラー: {str(e)}")
+                logger.error(traceback.format_exc())
                 return jsonify({'error': f'処理エラー: {str(e)}'}), 500
             finally:
                 # 一時ファイルを削除
@@ -339,6 +353,14 @@ def upload_file():
         'processed_files': total_files
     })
 
-if __name__ == '__main__':
+def get_port():
+    """環境に応じて適切なポートを取得する"""
+    # Heroku環境ではPORT環境変数が設定される
     port = int(os.environ.get('PORT', 8080))
+    logger.info(f"Using port: {port}")
+    return port
+
+if __name__ == '__main__':
+    port = get_port()
+    logger.info(f"Starting application on port {port}")
     app.run(host='0.0.0.0', port=port, debug=False)

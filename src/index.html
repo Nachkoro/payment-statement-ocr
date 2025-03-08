@@ -68,10 +68,33 @@
         const loading = document.getElementById('loading');
         const results = document.getElementById('results');
 
+        // エラー表示用の要素を作成
+        const errorDiv = document.createElement('div');
+        errorDiv.className = 'error';
+        document.body.insertBefore(errorDiv, results);
+
+        // 進捗状況を定期的に取得する関数
+        function checkProgress() {
+            fetch('/progress')
+                .then(response => response.json())
+                .then(data => {
+                    const progressText = `処理中: ${data.current_file}/${data.total_files} ファイル (${data.filename}) - ページ ${data.current_page}/${data.total_pages}`;
+                    document.getElementById('progress-text').textContent = progressText;
+                })
+                .catch(err => console.error('進捗取得エラー:', err));
+        }
+
         uploadBtn.addEventListener('click', () => {
             const fileInput = document.getElementById('file-input');
             const files = fileInput.files;
-            if (files.length === 0) return;
+            if (files.length === 0) {
+                errorDiv.textContent = 'ファイルを選択してください';
+                errorDiv.style.display = 'block';
+                return;
+            }
+
+            // エラーメッセージをクリア
+            errorDiv.style.display = 'none';
 
             const formData = new FormData();
             for (let file of files) {
@@ -81,21 +104,132 @@
             loading.style.display = 'block';
             results.style.display = 'none';
 
+            // 進捗テキスト要素を追加
+            if (!document.getElementById('progress-text')) {
+                const progressText = document.createElement('p');
+                progressText.id = 'progress-text';
+                loading.appendChild(progressText);
+            }
+
+            // 進捗状況の定期チェックを開始
+            const progressInterval = setInterval(checkProgress, 1000);
+
             fetch('/upload', {
                 method: 'POST',
                 body: formData
             })
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) {
+                    return response.json().then(err => {
+                        throw new Error(err.error || '処理中にエラーが発生しました');
+                    });
+                }
+                return response.json();
+            })
             .then(data => {
+                clearInterval(progressInterval); // 進捗チェックを停止
                 loading.style.display = 'none';
                 results.style.display = 'block';
+                
                 // 結果の表示処理
+                displayResults(data);
             })
             .catch(error => {
+                clearInterval(progressInterval); // 進捗チェックを停止
                 loading.style.display = 'none';
+                errorDiv.textContent = `エラー: ${error.message}`;
+                errorDiv.style.display = 'block';
                 console.error('エラー:', error);
             });
         });
+
+        // 結果を表示する関数
+        function displayResults(data) {
+            results.innerHTML = '';
+            
+            if (data.records && data.records.length > 0) {
+                // 結果のヘッダー
+                const header = document.createElement('h2');
+                header.textContent = `処理結果 (${data.processed_files}ファイル処理済み)`;
+                results.appendChild(header);
+                
+                // CSVダウンロードボタン
+                const csvButton = document.createElement('button');
+                csvButton.className = 'btn';
+                csvButton.textContent = 'CSVダウンロード';
+                csvButton.onclick = () => downloadCSV(data.csv, '支払調書データ.csv');
+                results.appendChild(csvButton);
+                
+                // 集計CSVダウンロードボタン
+                const aggCsvButton = document.createElement('button');
+                aggCsvButton.className = 'btn';
+                aggCsvButton.style.marginLeft = '10px';
+                aggCsvButton.textContent = '集計CSVダウンロード';
+                aggCsvButton.onclick = () => downloadCSV(data.aggregated_csv, '支払調書集計データ.csv');
+                results.appendChild(aggCsvButton);
+                
+                // 結果テーブル
+                const table = document.createElement('table');
+                table.style.width = '100%';
+                table.style.marginTop = '20px';
+                table.style.borderCollapse = 'collapse';
+                
+                // テーブルヘッダー
+                const thead = document.createElement('thead');
+                const headerRow = document.createElement('tr');
+                ['区分', '細目', '支払金額', '源泉徴収税額', '支払者所在地', '支払者名称', '支払者電話番号'].forEach(text => {
+                    const th = document.createElement('th');
+                    th.textContent = text;
+                    th.style.padding = '8px';
+                    th.style.borderBottom = '2px solid #ddd';
+                    th.style.textAlign = 'left';
+                    headerRow.appendChild(th);
+                });
+                thead.appendChild(headerRow);
+                table.appendChild(thead);
+                
+                // テーブルボディ
+                const tbody = document.createElement('tbody');
+                data.records.forEach(record => {
+                    const row = document.createElement('tr');
+                    [
+                        record.category,
+                        record.detail,
+                        record.payment_amount,
+                        record.withholding_tax,
+                        record.payer_address,
+                        record.payer_name,
+                        record.payer_tel
+                    ].forEach(text => {
+                        const td = document.createElement('td');
+                        td.textContent = text;
+                        td.style.padding = '8px';
+                        td.style.borderBottom = '1px solid #ddd';
+                        row.appendChild(td);
+                    });
+                    tbody.appendChild(row);
+                });
+                table.appendChild(tbody);
+                results.appendChild(table);
+            } else {
+                const noData = document.createElement('p');
+                noData.textContent = 'データが抽出できませんでした。別の画像をお試しください。';
+                results.appendChild(noData);
+            }
+        }
+        
+        // CSVをダウンロードする関数
+        function downloadCSV(csvContent, filename) {
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement('a');
+            const url = URL.createObjectURL(blob);
+            link.setAttribute('href', url);
+            link.setAttribute('download', filename);
+            link.style.visibility = 'hidden';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
     </script>
 </body>
 </html>
